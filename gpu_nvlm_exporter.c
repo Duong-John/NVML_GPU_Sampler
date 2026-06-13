@@ -14,6 +14,8 @@ unsigned int gpu_temperature = 0;
 unsigned int gpu_utilization = 0;
 unsigned int gpu_mem_utilization = 0;
 
+pthread_mutex_t data_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 // GET /metrics
 static enum MHD_Result answer_to_connection(void *cls, struct MHD_Connection *connection,
                                             const char *url, const char *method,
@@ -22,6 +24,17 @@ static enum MHD_Result answer_to_connection(void *cls, struct MHD_Connection *co
     if (strcmp(url, "/metrics") != 0) {
         return MHD_NO; // Only respond to /metrics
     }
+
+    double current_power;
+    unsigned int current_temp, current_util, current_mem;
+
+    // Khóa Mutex, copy dữ liệu, Mở khóa
+    pthread_mutex_lock(&data_mutex);
+    current_power = gpu_power_usage;
+    current_temp = gpu_temperature;
+    current_util = gpu_utilization;
+    current_mem = gpu_mem_utilization;
+    pthread_mutex_unlock(&data_mutex);
 
     char response_str[1024];
     
@@ -39,7 +52,7 @@ static enum MHD_Result answer_to_connection(void *cls, struct MHD_Connection *co
              "# HELP gpu_mem_utilization GPU Memory Utilization in percent\n"
              "# TYPE gpu_mem_utilization gauge\n"
              "gpu_mem_utilization %u\n",
-             gpu_power_usage, gpu_temperature, gpu_utilization, gpu_mem_utilization);
+             current_power, current_temp, current_util, current_mem);
 
     struct MHD_Response *response = MHD_create_response_from_buffer(strlen(response_str), (void *)response_str, MHD_RESPMEM_MUST_COPY);
     enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
@@ -72,7 +85,9 @@ void* nvml_worker_thread(void* arg) {
 
     while (1) {
         unsigned int power_mw = 0;
+        pthread_mutex_lock(&data_mutex);
         if (NVML_SUCCESS == nvmlDeviceGetPowerUsage(device, &power_mw)) {
+            
             gpu_power_usage = (double)power_mw / 1000.0;
         }
 
@@ -86,6 +101,7 @@ void* nvml_worker_thread(void* arg) {
             gpu_utilization = util.gpu;
             gpu_mem_utilization = util.memory;
         }
+        pthread_mutex_unlock(&data_mutex);
 
         sleep(1);
     }
